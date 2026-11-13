@@ -4,17 +4,24 @@
 #ifndef REDIS_COMMON_H
 #define REDIS_COMMON_H
 
-#define PHPREDIS_CTX_PTR ((char *)0xDEADC0DE)
+#include "php_compat.h"
+
 #define PHPREDIS_NOTUSED(v) ((void)v)
 
 #include "zend_llist.h"
 #include <ext/standard/php_var.h>
 #include <ext/standard/php_math.h>
 #include <zend_smart_str.h>
-#include <ext/standard/php_smart_string.h>
+#include <zend_smart_string.h>
 
-#define PHPREDIS_GET_OBJECT(class_entry, o) (class_entry *)((char *)o - XtOffsetOf(class_entry, std))
-#define PHPREDIS_ZVAL_GET_OBJECT(class_entry, z) PHPREDIS_GET_OBJECT(class_entry, Z_OBJ_P(z))
+#define PHPREDIS_GET_OBJECT(class_entry, o) (class_entry *)((char *)o - offsetof(class_entry, std))
+#define PHPREDIS_ZVAL_GET_OBJECT(class_entry, z) PHPREDIS_GET_OBJECT(class_entry, phpredis_zval_object(z))
+
+static zend_always_inline zend_object *phpredis_zval_object(zval *zv) {
+    ZEND_ASSERT(zv != NULL);
+    ZEND_ASSERT(Z_TYPE_P(zv) == IS_OBJECT);
+    return Z_OBJ_P(zv);
+}
 
 /* We'll fallthrough if we want to */
 #ifndef __has_attribute
@@ -26,9 +33,41 @@
 #define REDIS_FALLTHROUGH do { } while (0)
 #endif
 
-/* NULL check so Eclipse doesn't go crazy */
-#ifndef NULL
-#define NULL   ((void *) 0)
+#if defined(_WIN32) || defined(_WIN64)
+# define PHPREDIS_LITTLE_ENDIAN
+#elif defined(__BYTE_ORDER__) && (__BYTE_ORDER__ == __ORDER_BIG_ENDIAN__)
+# define PHPREDIS_BIG_ENDIAN
+#elif defined(__BYTE_ORDER__) && (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
+# define PHPREDIS_LITTLE_ENDIAN
+#else
+# error "Unknown endianness"
+#endif
+
+#if defined(_MSC_VER) && !defined(__clang__)
+#  define REDIS_MSVC 1
+#endif
+
+#ifndef REDIS_MSVC
+#  ifndef REDIS_NODISCARD
+#    if defined(__has_c_attribute)
+#      if __has_c_attribute(nodiscard)
+#        define REDIS_NODISCARD [[nodiscard]]
+#      endif
+#    endif
+#  endif
+#  ifndef REDIS_NODISCARD
+#    if defined(__has_attribute)
+#      if __has_attribute(warn_unused_result)
+#        define REDIS_NODISCARD __attribute__((warn_unused_result))
+#      endif
+#    elif defined(__GNUC__) || defined(__clang__)
+#      define REDIS_NODISCARD __attribute__((warn_unused_result))
+#    endif
+#  endif
+#endif /* ifndef REDIS_MSVC */
+
+#ifndef REDIS_NODISCARD
+#  define REDIS_NODISCARD
 #endif
 
 #include "backoff.h"
@@ -51,6 +90,7 @@ typedef enum {
 #define REDIS_ZSET      4
 #define REDIS_HASH      5
 #define REDIS_STREAM    6
+#define REDIS_VECTORSET 7
 
 #ifdef PHP_WIN32
 #define PHP_REDIS_API __declspec(dllexport)
@@ -91,20 +131,21 @@ typedef enum _PUBSUB_TYPE {
 #define REDIS_SUBS_BUCKETS   3
 
 /* options */
-#define REDIS_OPT_SERIALIZER         1
-#define REDIS_OPT_PREFIX             2
-#define REDIS_OPT_READ_TIMEOUT       3
-#define REDIS_OPT_SCAN               4
-#define REDIS_OPT_FAILOVER           5
-#define REDIS_OPT_TCP_KEEPALIVE      6
-#define REDIS_OPT_COMPRESSION        7
-#define REDIS_OPT_REPLY_LITERAL      8
-#define REDIS_OPT_COMPRESSION_LEVEL  9
-#define REDIS_OPT_NULL_MBULK_AS_NULL 10
-#define REDIS_OPT_MAX_RETRIES        11
-#define REDIS_OPT_BACKOFF_ALGORITHM  12
-#define REDIS_OPT_BACKOFF_BASE       13
-#define REDIS_OPT_BACKOFF_CAP        14
+#define REDIS_OPT_SERIALIZER          1
+#define REDIS_OPT_PREFIX              2
+#define REDIS_OPT_READ_TIMEOUT        3
+#define REDIS_OPT_SCAN                4
+#define REDIS_OPT_FAILOVER            5
+#define REDIS_OPT_TCP_KEEPALIVE       6
+#define REDIS_OPT_COMPRESSION         7
+#define REDIS_OPT_REPLY_LITERAL       8
+#define REDIS_OPT_COMPRESSION_LEVEL   9
+#define REDIS_OPT_NULL_MBULK_AS_NULL  10
+#define REDIS_OPT_MAX_RETRIES         11
+#define REDIS_OPT_BACKOFF_ALGORITHM   12
+#define REDIS_OPT_BACKOFF_BASE        13
+#define REDIS_OPT_BACKOFF_CAP         14
+#define REDIS_OPT_PACK_IGNORE_NUMBERS 15
 
 /* cluster options */
 #define REDIS_FAILOVER_NONE              0
@@ -117,7 +158,8 @@ typedef enum {
     REDIS_SERIALIZER_PHP,
     REDIS_SERIALIZER_IGBINARY,
     REDIS_SERIALIZER_MSGPACK,
-    REDIS_SERIALIZER_JSON
+    REDIS_SERIALIZER_JSON,
+    REDIS_SERIALIZER_PHPSER
 } redis_serializer;
 /* compression */
 #define REDIS_COMPRESSION_NONE 0
@@ -152,131 +194,36 @@ typedef enum {
 
 #define PHPREDIS_DEBUG_LOGGING 0
 
-#if PHP_VERSION_ID < 80000
-#define Z_PARAM_ARRAY_HT_OR_NULL(dest) \
-        Z_PARAM_ARRAY_HT_EX(dest, 1, 0)
-#define Z_PARAM_STR_OR_NULL(dest) \
-        Z_PARAM_STR_EX(dest, 1, 0)
-#define Z_PARAM_ZVAL_OR_NULL(dest) \
-	Z_PARAM_ZVAL_EX(dest, 1, 0)
-#define Z_PARAM_BOOL_OR_NULL(dest, is_null) \
-	Z_PARAM_BOOL_EX(dest, is_null, 1, 0)
-#endif
-
 #if PHPREDIS_DEBUG_LOGGING == 1
 #define redisDbgFmt(fmt, ...) \
     php_printf("%s:%d:%s(): " fmt "\n", __FILE__, __LINE__, __func__, __VA_ARGS__)
-#define redisDbgStr(str) phpredisDebugFmt("%s", str)
+#define redisDbgStr(str) redisDbgFmt("%s", str)
 #else
 #define redisDbgFmt(fmt, ...) ((void)0)
 #define redisDbgStr(str) ((void)0)
 #endif
 
-#define IS_ATOMIC(redis_sock) (redis_sock->mode == ATOMIC)
-#define IS_MULTI(redis_sock) (redis_sock->mode & MULTI)
-#define IS_PIPELINE(redis_sock) (redis_sock->mode & PIPELINE)
-
-#define PIPELINE_ENQUEUE_COMMAND(cmd, cmd_len) do { \
-    if (redis_sock->pipeline_cmd == NULL) { \
-        redis_sock->pipeline_cmd = zend_string_init(cmd, cmd_len, 0); \
-    } else { \
-        size_t pipeline_len = ZSTR_LEN(redis_sock->pipeline_cmd); \
-        redis_sock->pipeline_cmd = zend_string_realloc(redis_sock->pipeline_cmd, pipeline_len + cmd_len, 0); \
-        memcpy(&ZSTR_VAL(redis_sock->pipeline_cmd)[pipeline_len], cmd, cmd_len); \
-    } \
-} while (0)
-
-#define SOCKET_WRITE_COMMAND(redis_sock, cmd, cmd_len) \
-    if(redis_sock_write(redis_sock, cmd, cmd_len) < 0) { \
-    efree(cmd); \
-    RETURN_FALSE; \
+/* On some versions of glibc strncmp and strncasecmp can be a macro a macro.
+ * This wrapper allows us to use it in combination with ZEND_STRL in those
+ * cases. */
+static zend_always_inline int redis_strncmp(const char *s1, const char *s2, size_t n) {
+    return strncmp(s1, s2, n);
+}
+static zend_always_inline int redis_strncasecmp(const char *s1, const char *s2, size_t n) {
+    return strncasecmp(s1, s2, n);
 }
 
-#define REDIS_SAVE_CALLBACK(callback, closure_context) do { \
-    fold_item *fi = malloc(sizeof(fold_item)); \
-    fi->fun = callback; \
-    fi->ctx = closure_context; \
-    fi->next = NULL; \
-    if (redis_sock->current) { \
-        redis_sock->current->next = fi; \
-    } \
-    redis_sock->current = fi; \
-    if (NULL == redis_sock->head) { \
-        redis_sock->head = redis_sock->current; \
-    } \
-} while (0)
-
-#define REDIS_PROCESS_REQUEST(redis_sock, cmd, cmd_len) \
-    if (IS_PIPELINE(redis_sock)) { \
-        PIPELINE_ENQUEUE_COMMAND(cmd, cmd_len); \
-    } else { \
-        SOCKET_WRITE_COMMAND(redis_sock, cmd, cmd_len); \
-    } \
-    efree(cmd);
-
-#define REDIS_PROCESS_RESPONSE_CLOSURE(function, closure_context) \
-    if (!IS_PIPELINE(redis_sock)) { \
-        if (redis_response_enqueued(redis_sock) != SUCCESS) { \
-            RETURN_FALSE; \
-        } \
-    } \
-    REDIS_SAVE_CALLBACK(function, closure_context); \
-    RETURN_ZVAL(getThis(), 1, 0); \
-
-#define REDIS_PROCESS_RESPONSE(function) else { \
-    REDIS_PROCESS_RESPONSE_CLOSURE(function, NULL) \
+static zend_always_inline zend_bool
+redis_str_eq(const char *s, size_t len, const char *cmp, size_t cmp_len)
+{
+    return len == cmp_len && redis_strncmp(s, cmp, len) == 0;
 }
 
-/* Process a command assuming our command where our command building
- * function is redis_<cmdname>_cmd */
-#define REDIS_PROCESS_CMD(cmdname, resp_func) \
-    RedisSock *redis_sock; char *cmd; int cmd_len; void *ctx=NULL; \
-    if ((redis_sock = redis_sock_get(getThis(), 0)) == NULL || \
-       redis_##cmdname##_cmd(INTERNAL_FUNCTION_PARAM_PASSTHRU,redis_sock, \
-                             &cmd, &cmd_len, NULL, &ctx)==FAILURE) { \
-            RETURN_FALSE; \
-    } \
-    REDIS_PROCESS_REQUEST(redis_sock, cmd, cmd_len); \
-    if (IS_ATOMIC(redis_sock)) { \
-        resp_func(INTERNAL_FUNCTION_PARAM_PASSTHRU, redis_sock, NULL, ctx); \
-    } else { \
-        REDIS_PROCESS_RESPONSE_CLOSURE(resp_func, ctx) \
-    }
-
-/* Process a command but with a specific command building function
- * and keyword which is passed to us*/
-#define REDIS_PROCESS_KW_CMD(kw, cmdfunc, resp_func) \
-    RedisSock *redis_sock; char *cmd; int cmd_len; void *ctx=NULL; \
-    if ((redis_sock = redis_sock_get(getThis(), 0)) == NULL || \
-       cmdfunc(INTERNAL_FUNCTION_PARAM_PASSTHRU, redis_sock, kw, &cmd, \
-               &cmd_len, NULL, &ctx)==FAILURE) { \
-            RETURN_FALSE; \
-    } \
-    REDIS_PROCESS_REQUEST(redis_sock, cmd, cmd_len); \
-    if (IS_ATOMIC(redis_sock)) { \
-        resp_func(INTERNAL_FUNCTION_PARAM_PASSTHRU, redis_sock, NULL, ctx); \
-    } else { \
-        REDIS_PROCESS_RESPONSE_CLOSURE(resp_func, ctx) \
-    }
-
-/* Case sensitive compare against compile-time static string */
-#define REDIS_STRCMP_STATIC(s, len, sstr) \
-    (len == sizeof(sstr) - 1 && !strncmp(s, sstr, len))
-
-/* Case insensitive compare against compile-time static string */
-#define REDIS_STRICMP_STATIC(s, len, sstr) \
-    (len == sizeof(sstr) - 1 && !strncasecmp(s, sstr, len))
-
-/* Test if a zval is a string and (case insensitive) matches a static string */
-#define ZVAL_STRICMP_STATIC(zv, sstr) \
-    REDIS_STRICMP_STATIC(Z_STRVAL_P(zv), Z_STRLEN_P(zv), sstr)
-
-/* Case insensitive compare of a zend_string to a static string */
-#define ZSTR_STRICMP_STATIC(zs, sstr) \
-    REDIS_STRICMP_STATIC(ZSTR_VAL(zs), ZSTR_LEN(zs), sstr)
-
-#define REDIS_ENABLE_MODE(redis_sock, m) (redis_sock->mode |= m)
-#define REDIS_DISABLE_MODE(redis_sock, m) (redis_sock->mode &= ~m)
+static zend_always_inline zend_bool
+redis_str_ieq(const char *s, size_t len, const char *cmp, size_t cmp_len)
+{
+    return len == cmp_len && redis_strncasecmp(s, cmp, len) == 0;
+}
 
 /* HOST_NAME_MAX doesn't exist everywhere */
 #ifndef HOST_NAME_MAX
@@ -294,59 +241,133 @@ typedef enum {
 #define RESP_EXEC_CMD          "*1\r\n$4\r\nEXEC\r\n"
 #define RESP_DISCARD_CMD       "*1\r\n$7\r\nDISCARD\r\n"
 
+typedef struct RedisHello {
+    zend_string *server;
+    zend_string *version;
+} RedisHello;
+
+typedef enum RedisSockType {
+    REDIS_SOCK_STANDALONE,
+    REDIS_SOCK_ARRAY,
+    REDIS_SOCK_CLUSTER,
+    REDIS_SOCK_SENTINEL,
+    REDIS_SOCK_SESSION
+} RedisSockType;
+
 /* {{{ struct RedisSock */
 typedef struct {
+    RedisSockType       type;
     php_stream          *stream;
-    php_stream_context  *stream_ctx;
     zend_string         *host;
     int                 port;
     zend_string         *user;
     zend_string         *pass;
+    HashTable           *context;
     double              timeout;
     double              read_timeout;
     long                retry_interval;
     int                 max_retries;
     struct RedisBackoff backoff;
     redis_sock_status   status;
-    int                 persistent;
-    int                 watching;
+    zend_bool           persistent;
+    zend_bool           watching;
     zend_string         *persistent_id;
     HashTable           *subs[REDIS_SUBS_BUCKETS];
     redis_serializer    serializer;
+    zend_bool           pack_ignore_numbers;
     int                 compression;
     int                 compression_level;
     long                dbNumber;
-
     zend_string         *prefix;
-
+    struct RedisHello   hello;
     short               mode;
-    struct fold_item    *head;
-    struct fold_item    *current;
-
-    zend_string         *pipeline_cmd;
+    struct fold_item    *reply_callback;
+    size_t              reply_callback_count;
+    size_t              reply_callback_capacity;
+    smart_string        pipeline_cmd;
 
     zend_string         *err;
-
     int                 scan;
 
-    int                 readonly;
-    int                 reply_literal;
-    int                 null_mbulk_as_null;
-    int                 tcp_keepalive;
-    int                 sentinel;
+    zend_bool           readonly;
+    zend_bool           reply_literal;
+    zend_bool           null_mbulk_as_null;
+    zend_bool           tcp_keepalive;
     size_t              txBytes;
     size_t              rxBytes;
+    uint8_t             flags;
 } RedisSock;
 /* }}} */
 
+static zend_always_inline zend_bool redis_sock_is_atomic(const RedisSock *redis_sock) {
+    return redis_sock->mode == ATOMIC;
+}
+
+static zend_always_inline zend_bool redis_sock_is_multi(const RedisSock *redis_sock) {
+    return (redis_sock->mode & MULTI) != 0;
+}
+
+static zend_always_inline zend_bool redis_sock_is_pipeline(const RedisSock *redis_sock) {
+    return (redis_sock->mode & PIPELINE) != 0;
+}
+
+/* Reply interpretation shared by Redis and RedisCluster. DEFAULT means the
+ * command's normal reply; multiway dispatchers select an explicit mode. */
+typedef enum RedisCtxMode {
+    REDIS_CTX_DEFAULT = 0,
+    REDIS_CTX_BOOL,
+    REDIS_CTX_STRING,
+    REDIS_CTX_LONG,
+    REDIS_CTX_VARIANT,
+    REDIS_CTX_MULTIBULK_RAW,
+    REDIS_CTX_ZIPPED_RAW,
+    REDIS_CTX_ZIPPED_INT,
+    REDIS_CTX_VARIANT_STRINGS,
+    REDIS_CTX_ACL_GETUSER,
+    REDIS_CTX_ACL_LOG,
+    REDIS_CTX_CLIENT_INFO,
+    REDIS_CTX_CLIENT_LIST,
+    REDIS_CTX_CLIENT_TRACKINGINFO,
+    REDIS_CTX_COMMAND_INFO,
+    REDIS_CTX_FUNCTION,
+    REDIS_CTX_COUNT,
+    REDIS_CTX_WITHSCORES,
+    REDIS_CTX_WITHVALUES,
+    REDIS_CTX_INCR,
+    REDIS_CTX_XAUTOCLAIM,
+    REDIS_CTX_DECODE_JSON,
+    REDIS_CTX_HELLO_SERVER,
+    REDIS_CTX_HELLO_VERSION,
+} RedisCtxMode;
+
+typedef void (RedisCmdCtxDtor)(void *ptr);
+/* The command and its reply handler agree on the active union member.
+ * A destructor is valid only with ptr; borrowed pointers may have no destructor. */
+typedef struct RedisCmdCtx {
+    union {
+        void *ptr;
+        RedisCtxMode mode;
+    };
+    RedisCmdCtxDtor *dtor;
+} RedisCmdCtx;
+
+extern const RedisCmdCtx redis_empty_ctx;
+
 /* Redis response handler function callback prototype */
-typedef void (*ResultCallback)(INTERNAL_FUNCTION_PARAMETERS, RedisSock *redis_sock, zval *z_tab, void *ctx);
-typedef int (*FailableResultCallback)(INTERNAL_FUNCTION_PARAMETERS, RedisSock*, zval*, void*);
+typedef void (*ResultCallback)(INTERNAL_FUNCTION_PARAMETERS,
+    RedisSock*, zval*, RedisCmdCtx);
+typedef int (*FailableResultCallback)(INTERNAL_FUNCTION_PARAMETERS,
+    RedisSock*, zval*, RedisCmdCtx);
+
+static zend_always_inline void redis_cmd_ctx_free(RedisCmdCtx ctx) {
+    if (ctx.dtor)
+        ctx.dtor(ctx.ptr);
+}
 
 typedef struct fold_item {
     FailableResultCallback fun;
-    void *ctx;
-    struct fold_item *next;
+    RedisCmdCtx ctx;
+    uint8_t flags;
 } fold_item;
 
 typedef struct {
@@ -358,7 +379,5 @@ typedef struct {
     RedisSock *sock;
     zend_object std;
 } redis_object;
-
-extern const zend_function_entry *redis_get_methods(void);
 
 #endif

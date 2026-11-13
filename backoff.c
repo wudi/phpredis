@@ -1,17 +1,5 @@
 #include "common.h"
 
-#include <ext/standard/php_rand.h>
-
-#if PHP_VERSION_ID >= 70100
-#include <ext/standard/php_mt_rand.h>
-#else
-static zend_long php_mt_rand_range(zend_long min, zend_long max) {
-    zend_long number = php_rand();
-    RAND_RANGE(number, min, max, PHP_RAND_MAX);
-    return number;
-}
-#endif
-
 #include "backoff.h"
 
 static zend_ulong random_range(zend_ulong min, zend_ulong max) {
@@ -64,7 +52,7 @@ static zend_ulong redis_decorrelated_jitter_backoff(struct RedisBackoff *self, u
 
 typedef zend_ulong (*redis_backoff_algorithm)(struct RedisBackoff *self, unsigned int retry_index);
 
-static redis_backoff_algorithm redis_backoff_algorithms[REDIS_BACKOFF_ALGORITHMS] = {
+static const redis_backoff_algorithm redis_backoff_algorithms[REDIS_BACKOFF_ALGORITHMS] = {
     redis_default_backoff,
     redis_decorrelated_jitter_backoff,
     redis_full_jitter_backoff,

@@ -8,11 +8,20 @@ dnl Make sure that the comment is aligned:
 PHP_ARG_ENABLE(redis-session, whether to enable sessions,
 [  --disable-redis-session      Disable session support], yes, no)
 
+PHP_ARG_ENABLE(redis-sanitizers, whether to enable address and undefined behavior sanitizers,
+[  --enable-redis-sanitizers    Build with ASan and UBSan], no, no)
+
+PHP_ARG_ENABLE(redis-analyzer, whether to enable GCC's static analyzer,
+[  --enable-redis-analyzer      Build with GCC's static analyzer (development only)], no, no)
+
 PHP_ARG_ENABLE(redis-json, whether to enable json serializer support,
 [  --disable-redis-json         Disable json serializer support], yes, no)
 
 PHP_ARG_ENABLE(redis-igbinary, whether to enable igbinary serializer support,
 [  --enable-redis-igbinary Enable igbinary serializer support], no, no)
+
+PHP_ARG_ENABLE(redis-phpser, whether to enable phpser serializer support,
+[  --enable-redis-phpser        Enable phpser serializer support], no, no)
 
 PHP_ARG_ENABLE(redis-msgpack, whether to enable msgpack serializer support,
 [  --enable-redis-msgpack       Enable msgpack serializer support], no, no)
@@ -144,6 +153,45 @@ if test "$PHP_REDIS" != "no"; then
     AC_MSG_RESULT([disabled])
   fi
 
+  if test "$PHP_REDIS_PHPSER" != "no"; then
+    AC_MSG_CHECKING([for phpser includes])
+    phpser_inc_path=""
+
+    if test -f "$abs_srcdir/include/php/ext/phpser/php_phpser_api.h"; then
+      phpser_inc_path="$abs_srcdir/include/php"
+    elif test -f "$abs_srcdir/ext/phpser/php_phpser_api.h"; then
+      phpser_inc_path="$abs_srcdir"
+    elif test -f "$phpincludedir/ext/phpser/php_phpser_api.h"; then
+      phpser_inc_path="$phpincludedir"
+    else
+      for i in php php7; do
+        if test -f "$prefix/include/$i/ext/phpser/php_phpser_api.h"; then
+          phpser_inc_path="$prefix/include/$i"
+        fi
+      done
+    fi
+
+    if test "$phpser_inc_path" = ""; then
+      AC_MSG_ERROR([Cannot find php_phpser_api.h])
+    else
+      AC_MSG_RESULT([$phpser_inc_path])
+    fi
+  fi
+
+  AC_MSG_CHECKING([for redis phpser support])
+  if test "$PHP_REDIS_PHPSER" != "no"; then
+    AC_MSG_RESULT([enabled])
+    AC_DEFINE(HAVE_REDIS_PHPSER,1,[Whether redis phpser serializer is enabled])
+    PHPSER_EXT_DIR="$phpser_inc_path/ext"
+    ifdef([PHP_ADD_EXTENSION_DEP],
+    [
+      PHP_ADD_EXTENSION_DEP(redis, phpser)
+    ])
+    PHP_ADD_INCLUDE($PHPSER_EXT_DIR)
+  else
+    AC_MSG_RESULT([disabled])
+  fi
+
   if test "$PHP_REDIS_MSGPACK" != "no"; then
     AC_MSG_CHECKING([for msgpack includes])
     msgpack_inc_path=""
@@ -221,6 +269,7 @@ if test "$PHP_REDIS" != "no"; then
       PHP_CHECK_LIBRARY(lzf, lzf_compress,
       [
         PHP_ADD_LIBRARY_WITH_PATH(lzf, $LIBLZF_DIR/$PHP_LIBDIR, REDIS_SHARED_LIBADD)
+        PHP_ADD_INCLUDE($LIBLZF_DIR/include)
       ], [
         AC_MSG_ERROR([could not find usable liblzf])
       ], [
@@ -263,12 +312,12 @@ if test "$PHP_REDIS" != "no"; then
       PHP_CHECK_LIBRARY(lz4, LZ4_compress,
       [
         PHP_ADD_LIBRARY_WITH_PATH(lz4, $LIBLZ4_DIR/$PHP_LIBDIR, REDIS_SHARED_LIBADD)
+        PHP_ADD_INCLUDE($LIBLZ4_DIR/include)
       ], [
         AC_MSG_ERROR([could not find usable liblz4])
       ], [
         -L$LIBLZ4_DIR/$PHP_LIBDIR
       ])
-      PHP_SUBST(REDIS_SHARED_LIBADD)
     else
       AC_MSG_ERROR([only system liblz4 is supported])
     fi
@@ -307,6 +356,7 @@ if test "$PHP_REDIS" != "no"; then
       PHP_CHECK_LIBRARY(zstd, ZSTD_getFrameContentSize,
       [
         PHP_ADD_LIBRARY_WITH_PATH(zstd, $LIBZSTD_DIR/$PHP_LIBDIR, REDIS_SHARED_LIBADD)
+        PHP_ADD_INCLUDE($LIBZSTD_DIR/include)
       ], [
         AC_MSG_ERROR([could not find usable libzstd, version 1.3.0 required])
       ], [
@@ -322,6 +372,45 @@ if test "$PHP_REDIS" != "no"; then
     AC_DEFINE_UNQUOTED(GIT_REVISION, ["$(git log -1 --format=%H)"], [ ])
   fi
 
+  if test "$PHP_REDIS_SANITIZERS" != "no"; then
+    dnl ASan includes leak detection; let the compiler select its runtime libraries.
+    redis_sanitizer_flags="-fsanitize=address,undefined -fno-sanitize=object-size -fno-sanitize-recover=undefined -fno-omit-frame-pointer"
+    redis_saved_CFLAGS="$CFLAGS"
+    CFLAGS="$CFLAGS $redis_sanitizer_flags"
+    AC_MSG_CHECKING([whether the compiler can link with ASan and UBSan])
+    AC_LINK_IFELSE([AC_LANG_PROGRAM([], [])], [AC_MSG_RESULT([yes])], [
+      AC_MSG_ERROR([Redis sanitizers require a compiler with ASan and UBSan support])
+    ])
+
+    dnl Match PHP's exclusions for zend_function unions and callback casts.
+    AC_MSG_CHECKING([whether the compiler supports -fno-sanitize=function])
+    CFLAGS="$CFLAGS -Werror -fno-sanitize=function"
+    AC_COMPILE_IFELSE([AC_LANG_PROGRAM([], [])], [
+      AC_MSG_RESULT([yes])
+      redis_sanitizer_flags="$redis_sanitizer_flags -fno-sanitize=function"
+    ], [AC_MSG_RESULT([no])])
+    CFLAGS="$redis_saved_CFLAGS"
+
+    if test -n "$lzf_sources"; then
+      dnl Bundled liblzf otherwise uses unaligned u16 loads that trigger UBSan.
+      PHP_REDIS_CFLAGS="$PHP_REDIS_CFLAGS -DSTRICT_ALIGN=1"
+    fi
+
+    PHP_REDIS_CFLAGS="$PHP_REDIS_CFLAGS $redis_sanitizer_flags"
+    LDFLAGS="$LDFLAGS -fsanitize=address,undefined"
+  fi
+
+  if test "$PHP_REDIS_ANALYZER" != "no"; then
+    redis_saved_CFLAGS="$CFLAGS"
+    CFLAGS="$CFLAGS -Werror -fanalyzer"
+    AC_MSG_CHECKING([whether the compiler supports -fanalyzer])
+    AC_COMPILE_IFELSE([AC_LANG_PROGRAM([], [])], [AC_MSG_RESULT([yes])], [
+      AC_MSG_ERROR([Redis static analysis requires a compiler with -fanalyzer support])
+    ])
+    CFLAGS="$redis_saved_CFLAGS"
+    PHP_REDIS_CFLAGS="$PHP_REDIS_CFLAGS -fanalyzer"
+  fi
+
   PHP_SUBST(REDIS_SHARED_LIBADD)
-  PHP_NEW_EXTENSION(redis, redis.c redis_commands.c library.c redis_session.c redis_array.c redis_array_impl.c redis_cluster.c cluster_library.c redis_sentinel.c sentinel_library.c backoff.c $lzf_sources, $ext_shared)
+  PHP_NEW_EXTENSION(redis, redis.c redis_commands.c library.c redis_session.c redis_array.c redis_array_impl.c redis_cluster.c redis_cmd.c cluster_library.c redis_sentinel.c sentinel_library.c backoff.c $lzf_sources, $ext_shared,, $PHP_REDIS_CFLAGS)
 fi

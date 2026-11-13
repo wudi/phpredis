@@ -1,41 +1,68 @@
 <?php
+// Exit codes: 0 success, 1 session failure, 2 invalid setup.
 error_reporting(E_ERROR | E_WARNING);
 
-$redisHost = $argv[1];
-$saveHandler = $argv[2];
-$sessionId = $argv[3];
-$sleepTime = $argv[4];
-$maxExecutionTime = $argv[5];
-$lock_retries = $argv[6];
-$lock_expire = $argv[7];
-$sessionData = $argv[8];
-$sessionLifetime = $argv[9];
+$opt = getopt('', [
+    'handler:', 'save-path:', 'id:', 'sleep:', 'max-execution-time:' ,
+    'locking-enabled:', 'lock-wait-time:', 'lock-retries:', 'lock-expires:',
+    'data:', 'lifetime:', 'compression:', 'strict-mode:', 'early-refresh:'
+]);
 
-if (empty($redisHost)) {
-    $redisHost = 'tcp://localhost:6379';
+$handler = $opt['handler'] ?? NULL;
+$save_path = $opt['save-path'] ?? NULL;
+$id = $opt['id'] ?? NULL;
+$sleep = $opt['sleep'] ?? 0;
+$max_execution_time = $opt['max-execution-time'] ?? 0;
+$lock_retries = $opt['lock-retries'] ?? 0;
+$lock_expire = $opt['lock-expires'] ?? 0;
+$data = $opt['data'] ?? NULL;
+$lifetime = $opt['lifetime'] ?? 0;
+$locking_enabled = $opt['locking-enabled'] ?? NULL;
+$lock_wait_time = $opt['lock-wait-time'] ?? 0;
+$compression = $opt['compression'] ?? NULL;
+$strict_mode = !!($opt['strict-mode'] ?? false);
+$early_refresh = !!($opt['early-refresh'] ?? false);
+
+if ( ! $handler) {
+    fprintf(STDERR, "--handler is required\n");
+    exit(2);
+} else if ( ! $save_path) {
+    fprintf(STDERR, "--save-path is required\n");
+    exit(2);
 }
 
-ini_set('session.save_handler', $saveHandler);
-ini_set('session.save_path', $redisHost);
-ini_set('max_execution_time', $maxExecutionTime);
-ini_set("{$saveHandler}.session.lock_retries", $lock_retries);
-ini_set("{$saveHandler}.session.lock_expire", $lock_expire);
-ini_set('session.gc_maxlifetime', $sessionLifetime);
+if (ini_set('session.save_handler', $handler) === false)
+    exit(2);
+ini_set('session.save_path', $save_path);
+ini_set('max_execution_time', $max_execution_time);
+ini_set("{$handler}.session.lock_retries", $lock_retries);
+ini_set("{$handler}.session.lock_expire", $lock_expire);
+ini_set('session.gc_maxlifetime', $lifetime);
+ini_set("{$handler}.session.locking_enabled", $locking_enabled);
+ini_set("{$handler}.session.lock_wait_time", $lock_wait_time);
+ini_set('redis.session.compression', $compression);
+ini_set('session.use_strict_mode', $strict_mode);
+ini_set('redis.session.early_refresh', $early_refresh);
 
-if (isset($argv[10])) {
-    ini_set("{$saveHandler}.session.locking_enabled", $argv[10]);
+session_id($id);
+
+// session_write_close() reports write failures through warnings, not its return value.
+set_error_handler(static function ($severity, $message, $file, $line) {
+    throw new ErrorException($message, 0, $severity, $file, $line);
+}, E_WARNING);
+
+try {
+    if (!session_start())
+        exit(1);
+
+    usleep((int)round($sleep * 1000000));
+
+    if ($data) {
+        $_SESSION['redis_test'] = $data;
+    }
+
+    exit(session_write_close() ? 0 : 1);
+} catch (Exception $ex) {
+    fprintf(STDERR, "%s\n", $ex->getMessage());
+    exit(1);
 }
-
-if (isset($argv[11])) {
-    ini_set("{$saveHandler}.session.lock_wait_time", $argv[11]);
-}
-
-session_id($sessionId);
-$sessionStartSuccessful = session_start();
-sleep($sleepTime);
-if (!empty($sessionData)) {
-    $_SESSION['redis_test'] = $sessionData;
-}
-session_write_close();
-
-echo $sessionStartSuccessful ? 'SUCCESS' : 'FAILURE';

@@ -1,6 +1,6 @@
 <?php defined('PHPREDIS_TESTRUN') or die("Use TestRedis.php to run tests!\n");
 
-require_once(dirname($_SERVER['PHP_SELF'])."/TestSuite.php");
+require_once __DIR__ . "/TestSuite.php";
 
 class Redis_Sentinel_Test extends TestSuite
 {
@@ -30,12 +30,18 @@ class Redis_Sentinel_Test extends TestSuite
 
     protected function newInstance()
     {
-        return new RedisSentinel(['host' => $this->getHost()]);
+        $class = $this->getRedisSentinelClass();
+        return new $class(['host' => $this->getHost()]);
     }
 
     public function setUp()
     {
         $this->sentinel = $this->newInstance();
+    }
+
+    public function testNotSerializable()
+    {
+        $this->assertNotSerializable($this->sentinel);
     }
 
     public function testCkquorum()
@@ -56,28 +62,28 @@ class Redis_Sentinel_Test extends TestSuite
     public function testGetMasterAddrByName()
     {
         $result = $this->sentinel->getMasterAddrByName(self::NAME);
-        $this->assertTrue(is_array($result));
-        $this->assertEquals(2, count($result));
+        $this->assertIsArray($result, 2);
     }
 
-    protected function checkFields(array $fields)
+    protected function checkFields($fields)
     {
+        $this->assertIsArray($fields);
+
         foreach ($this->fields as $k) {
-            $this->assertTrue(array_key_exists($k, $fields));
+            $this->assertArrayKey($fields, $k);
         }
     }
 
     public function testMaster()
     {
         $result = $this->sentinel->master(self::NAME);
-        $this->assertTrue(is_array($result));
         $this->checkFields($result);
     }
 
     public function testMasters()
     {
         $result = $this->sentinel->masters();
-        $this->assertTrue(is_array($result));
+        $this->assertIsArray($result);
         foreach ($result as $master) {
             $this->checkFields($master);
         }
@@ -86,7 +92,7 @@ class Redis_Sentinel_Test extends TestSuite
     public function testMyid()
     {
         $result = $this->sentinel->myid();
-        $this->assertTrue(is_string($result));
+        $this->assertIsString($result);
     }
 
     public function testPing()
@@ -102,7 +108,7 @@ class Redis_Sentinel_Test extends TestSuite
     public function testSentinels()
     {
         $result = $this->sentinel->sentinels(self::NAME);
-        $this->assertTrue(is_array($result));
+        $this->assertIsArray($result);
         foreach ($result as $sentinel) {
             $this->checkFields($sentinel);
         }
@@ -111,9 +117,62 @@ class Redis_Sentinel_Test extends TestSuite
     public function testSlaves()
     {
         $result = $this->sentinel->slaves(self::NAME);
-        $this->assertTrue(is_array($result));
+        $this->assertIsArray($result);
         foreach ($result as $slave) {
             $this->checkFields($slave);
+        }
+    }
+
+    protected function getClients($redis, string $cmd)
+    {
+        $result = [];
+
+        $clients = $redis->client('list');
+        $this->assertIsArray($clients);
+
+        foreach ($clients as $client) {
+            $this->assertArrayKey($client, 'cmd');
+            $this->assertArrayKey($client, 'id');
+            $this->assertArrayKey($client, 'name');
+
+            /* Sentinel peers also send PINGs on their named connections. */
+            if ($client['cmd'] !== $cmd || strpos($client['name'], 'sentinel-') === 0)
+                continue;
+
+            $result[] = $client['id'];
+        }
+
+        return $result;
+    }
+
+    public function testPersistent() {
+        $redis_class = $this->getRedisClass();
+        $sentinel_class = $this->getRedisSentinelClass();
+
+        /* I think the tests just use the default port */
+        $redis = new $redis_class;
+        $redis->connect($this->getHost(), 26379);
+
+        $id = null;
+
+        for ($i = 0; $i < 3; $i++) {
+            $sentinel = new $sentinel_class([
+                'host' => $this->getHost(),
+                'persistent' => 'sentinel',
+            ]);
+
+            $this->assertTrue($sentinel->ping());
+
+            $clients = $this->getClients($redis, 'ping');
+            $this->assertIsArray($clients, 1);
+
+            /* Capture the ping client */
+            $id ??= $clients[0];
+
+            /* The same client should have been reused */
+            $this->assertArrayKeyEquals($clients, 0, $id);
+
+            unset($sentinel);
         }
     }
 }

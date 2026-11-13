@@ -6,9 +6,10 @@
  * @generate-class-entries
  */
 
+/** @not-serializable */
 class RedisSentinel {
 
-    public function __construct(?array $options = null);
+    public function __construct(#[\SensitiveParameter] ?array $options = null);
 
 	/** @return bool|RedisSentinel */
     public function ckquorum(string $master);

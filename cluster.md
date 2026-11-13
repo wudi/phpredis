@@ -10,21 +10,23 @@ To maintain consistency with the RedisArray class, one can create and connect to
 #### Declaring a cluster with an array of seeds
 ```php
 // Create a cluster setting three nodes as seeds
-$obj_cluster = new RedisCluster(NULL, Array('host:7000', 'host:7001', 'host:7003'));
+$obj_cluster = new RedisCluster(NULL, ['host:7000', 'host:7001', 'host:7003']);
 
 // Connect and specify timeout and read_timeout
-$obj_cluster = new RedisCluster(NULL, Array("host:7000", "host:7001"), 1.5, 1.5);
+$obj_cluster = new RedisCluster(NULL, ["host:7000", "host:7001"], 1.5, 1.5);
 
 // Connect with read/write timeout as well as specify that phpredis should use
 // persistent connections to each node.
-$obj_cluster = new RedisCluster(NULL, Array("host:7000", "host:7001"), 1.5, 1.5, true);
+$obj_cluster = new RedisCluster(NULL, ["host:7000", "host:7001"], 1.5, 1.5, true);
 
 // Connect with cluster using password.
-$obj_cluster = new RedisCluster(NULL, Array("host:7000", "host:7001"), 1.5, 1.5, true, "password");
+$obj_cluster = new RedisCluster(NULL, ["host:7000", "host:7001"], 1.5, 1.5, true, "password");
 
-// Connect with cluster using SSL/TLS
-// last argument is an array with [SSL context](https://www.php.net/manual/en/context.ssl.php) options
-$obj_cluster = new RedisCluster(NULL, Array("host:7000", "host:7001"), 1.5, 1.5, true, NULL, Array("verify_peer" => false));
+// Connect with cluster using TLS
+// last argument is an optional array with [SSL context options](https://www.php.net/manual/en/context.ssl.php) (TLS options)
+// If value is array (even empty), it will connect via TLS.  If not, it will connect without TLS.
+// Note: If the seeds start with "ssl:// or tls://", it will connect to the seeds via TLS, but the subsequent connections will connect without TLS if this value is null.  So, if your nodes require TLS, this value must be an array, even if empty.
+$obj_cluster = new RedisCluster(NULL, ["host:7000", "host:7001"], 1.5, 1.5, true, NULL, ["verify_peer" => false]);
 ```
 
 #### Loading a cluster configuration by name
@@ -206,3 +208,13 @@ To enable, set the following INI variable:
 redis.session.early_refresh = 1
 ```
 Note: This is disabled by default since it may significantly reduce the session lifetime for long-running scripts. Redis server version 6.2+ required.
+
+### Session compression
+
+Following INI variables can be used to configure session compression:
+~~~
+; Should session compression be enabled? Possible values are zstd, lzf, lz4, none. Defaults to: none
+redis.session.compression = zstd
+; What compression level should be used? Compression level depends on used library. For most deployments range 1-9 should be fine. Defaults to: 3
+redis.session.compression_level = 3
+~~~

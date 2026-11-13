@@ -1,5 +1,5 @@
 /* This is a generated file, edit the .stub.php file instead.
- * Stub hash: fa84ce2b68b10564dd8abaffecefe4dd5d65b591 */
+ * Stub hash: f0584c706e0abd0c72959f06be241a7f89efe33a */
 
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_RedisArray___call, 0, 2, IS_MIXED, 0)
 	ZEND_ARG_TYPE_INFO(0, function_name, IS_STRING, 0)
@@ -44,7 +44,8 @@ ZEND_END_ARG_INFO()
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_class_RedisArray_discard, 0, 0, _IS_BOOL, 1)
 ZEND_END_ARG_INFO()
 
-#define arginfo_class_RedisArray_exec arginfo_class_RedisArray_discard
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_MASK_EX(arginfo_class_RedisArray_exec, 0, 0, MAY_BE_BOOL|MAY_BE_NULL|MAY_BE_ARRAY)
+ZEND_END_ARG_INFO()
 
 #define arginfo_class_RedisArray_flushall arginfo_class_RedisArray__continuum
 
@@ -56,7 +57,7 @@ ZEND_END_ARG_INFO()
 
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_MASK_EX(arginfo_class_RedisArray_hscan, 0, 2, MAY_BE_BOOL|MAY_BE_ARRAY)
 	ZEND_ARG_TYPE_INFO(0, key, IS_STRING, 0)
-	ZEND_ARG_TYPE_INFO(1, iterator, IS_LONG, 1)
+	ZEND_ARG_TYPE_MASK(1, iterator, MAY_BE_NULL|MAY_BE_LONG|MAY_BE_STRING, NULL)
 	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, pattern, IS_STRING, 1, "null")
 	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, count, IS_LONG, 0, "0")
 ZEND_END_ARG_INFO()
@@ -85,7 +86,7 @@ ZEND_END_ARG_INFO()
 #define arginfo_class_RedisArray_save arginfo_class_RedisArray__continuum
 
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_MASK_EX(arginfo_class_RedisArray_scan, 0, 2, MAY_BE_BOOL|MAY_BE_ARRAY)
-	ZEND_ARG_TYPE_INFO(1, iterator, IS_LONG, 1)
+	ZEND_ARG_TYPE_MASK(1, iterator, MAY_BE_NULL|MAY_BE_LONG|MAY_BE_STRING, NULL)
 	ZEND_ARG_TYPE_INFO(0, node, IS_STRING, 0)
 	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, pattern, IS_STRING, 1, "null")
 	ZEND_ARG_TYPE_INFO_WITH_DEFAULT_VALUE(0, count, IS_LONG, 0, "0")
@@ -107,7 +108,6 @@ ZEND_END_ARG_INFO()
 #define arginfo_class_RedisArray_unwatch arginfo_class_RedisArray_discard
 
 #define arginfo_class_RedisArray_zscan arginfo_class_RedisArray_hscan
-
 
 ZEND_METHOD(RedisArray, __call);
 ZEND_METHOD(RedisArray, __construct);
@@ -140,7 +140,6 @@ ZEND_METHOD(RedisArray, sscan);
 ZEND_METHOD(RedisArray, unlink);
 ZEND_METHOD(RedisArray, unwatch);
 ZEND_METHOD(RedisArray, zscan);
-
 
 static const zend_function_entry class_RedisArray_methods[] = {
 	ZEND_ME(RedisArray, __call, arginfo_class_RedisArray___call, ZEND_ACC_PUBLIC)
@@ -182,7 +181,21 @@ static zend_class_entry *register_class_RedisArray(void)
 	zend_class_entry ce, *class_entry;
 
 	INIT_CLASS_ENTRY(ce, "RedisArray", class_RedisArray_methods);
+#if (PHP_VERSION_ID >= 80400)
+	class_entry = zend_register_internal_class_with_flags(&ce, NULL, ZEND_ACC_NOT_SERIALIZABLE);
+#else
 	class_entry = zend_register_internal_class_ex(&ce, NULL);
+#if (PHP_VERSION_ID >= 80100)
+	class_entry->ce_flags |= ZEND_ACC_NOT_SERIALIZABLE;
+#elif (PHP_VERSION_ID >= 80000)
+	class_entry->ce_flags |= 0;
+#endif
+#endif
+
+
+	zend_string *attribute_name_SensitiveParameter_func___construct_arg1_0 = zend_string_init_interned("SensitiveParameter", sizeof("SensitiveParameter") - 1, 1);
+	zend_add_parameter_attribute(zend_hash_str_find_ptr(&class_entry->function_table, "__construct", sizeof("__construct") - 1), 1, attribute_name_SensitiveParameter_func___construct_arg1_0, 0);
+	zend_string_release(attribute_name_SensitiveParameter_func___construct_arg1_0);
 
 	return class_entry;
 }

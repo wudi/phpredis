@@ -40,7 +40,7 @@ $ra = new RedisArray(array("host1", "host2", "host3"), array("previous" => array
 #### Specifying the "retry_interval" parameter
 The retry_interval is used to specify a delay in milliseconds between reconnection attempts in case the client loses connection with a server
 <pre>
-$ra = new RedisArray(array("host1", "host2:63792", "host2:6380"), array("retry_timeout" => 100));
+$ra = new RedisArray(array("host1", "host2:63792", "host2:6380"), array("retry_interval" => 100));
 </pre>
 
 #### Specifying the "lazy_connect" parameter
@@ -121,7 +121,7 @@ For instance, the keys “{user:1}:name” and “{user:1}:email” will be stor
 ## Custom key distribution function
 In order to control the distribution of keys by hand, you can provide a custom function or closure that returns the server number, which is the index in the array of servers that you created the RedisArray object with.
 
-For instance, instantiate a RedisArray object with `new RedisArray(array("us-host", "uk-host", "de-host"), array("distributor" => "dist"));` and write a function called "dist" that will return `2` for all the keys that should end up on the "de-host" server.
+For instance, instantiate a RedisArray object with `new RedisArray(["us-host", "uk-host", "de-host"], ["distributor" => "dist"]);` and write a function called "dist" that will return `2` for all the keys that should end up on the "de-host" server.
 
 ### Example
 <pre>

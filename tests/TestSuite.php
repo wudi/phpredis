@@ -3,20 +3,28 @@
 /* A specific exception for when we skip a test */
 class TestSkippedException extends Exception {}
 
+/* Stop the current test on the first failed assertion. */
+class TestFailedException extends Exception {}
+
 // phpunit is such a pain to install, we're going with pure-PHP here.
 class TestSuite
 {
     /* Host and port the unit tests will use */
-    private $str_host;
-    private $i_port = 6379;
+    private string $host;
+    private ?int $port = 6379;
+    private ?int $tls_port = 6378;
 
     /* Redis authentication we'll use */
     private $auth;
 
     /* Redis server version */
     protected $version;
+    protected string $valkey_version;
+    protected bool $is_dragonfly;
+    protected bool $is_keydb;
+    protected bool $is_valkey;
 
-    private static $_boo_colorize = false;
+    private static bool $colorize = false;
 
     private static $BOLD_ON = "\033[1m";
     private static $BOLD_OFF = "\033[0m";
@@ -29,200 +37,558 @@ class TestSuite
     private static $YELLOW = "\033[0;33m";
     private static $RED = "\033[0;31m";
 
-    public static $errors = [];
-    public static $warnings = [];
+    public static array $errors = [];
+    public static array $warnings = [];
+    private static array $failed_tests = [];
 
-    public function __construct($str_host, $i_port, $auth) {
-        $this->str_host = $str_host;
-        $this->i_port = $i_port;
+    public function __construct(string $host, ?int $port, $auth, ?int $tls_port = 6378) {
+        $this->host = $host;
+        $this->port = $port;
         $this->auth = $auth;
+        $this->tls_port = $tls_port;
     }
 
-    public function getHost() { return $this->str_host; }
-    public function getPort() { return $this->i_port; }
+    public function getHost() { return $this->host; }
+    public function getPort() { return $this->port; }
+    public function getTlsPort() { return $this->tls_port; }
     public function getAuth() { return $this->auth; }
 
-    /**
-     * Returns the fully qualified host path,
-     * which may be used directly for php.ini parameters like session.save_path
-     *
-     * @return null|string
-     */
-    protected function getFullHostPath()
-    {
-        return $this->str_host
-            ? 'tcp://' . $this->str_host . ':' . $this->i_port
-            : null;
+    /* Override these independently: cluster and sentinel tests also use
+     * standalone clients for administrative commands. */
+    protected function getRedisClass() { return Redis::class; }
+    protected function getRedisClusterClass() { return RedisCluster::class; }
+    protected function getRedisSentinelClass() { return RedisSentinel::class; }
+
+    /* Test classes that can query INFO may override this. */
+    public function getServerInfo() {
+        return NULL;
     }
 
-    public static function make_bold($str_msg) {
-        return self::$_boo_colorize
-            ? self::$BOLD_ON . $str_msg . self::$BOLD_OFF
-            : $str_msg;
+    /* Return a human-readable server/version string when INFO identifies it. */
+    public function getServerVersion() {
+        $info = $this->getServerInfo();
+
+        if ( ! is_array($info))
+            return NULL;
+
+        if (isset($info['dragonfly_version']))
+            return 'Dragonfly version ' . $info['dragonfly_version'];
+
+        if (($info['server_name'] ?? NULL) === 'valkey' ||
+            isset($info['valkey_version']))
+        {
+            $version = $info['valkey_version'] ?? $info['redis_version'] ?? NULL;
+            return $version === NULL ? 'Valkey' : 'Valkey version ' . $version;
+        }
+
+        if (isset($info['redis_version']))
+            return 'Redis version ' . $info['redis_version'];
+
+        return NULL;
     }
 
-    public static function make_success($str_msg) {
-        return self::$_boo_colorize
-            ? self::$GREEN . $str_msg . self::$BOLD_OFF
-            : $str_msg;
+    public static function errorMessage(string $fmt, ...$args) {
+        $msg = vsprintf($fmt . "\n", $args);
+
+        if (defined('STDERR')) {
+            fwrite(STDERR, $msg);
+        } else {
+            echo $msg;
+        }
     }
 
-    public static function make_fail($str_msg) {
-        return self::$_boo_colorize
-            ? self::$RED . $str_msg . self::$BOLD_OFF
-            : $str_msg;
+    public static function make_bold(string $msg) {
+        return self::$colorize ? self::$BOLD_ON . $msg . self::$BOLD_OFF : $msg;
     }
 
-    public static function make_warning($str_msg) {
-        return self::$_boo_colorize
-            ? self::$YELLOW . $str_msg . self::$BOLD_OFF
-            : $str_msg;
+    public static function make_success(string $msg) {
+        return self::$colorize ? self::$GREEN . $msg . self::$BOLD_OFF : $msg;
     }
 
-    protected function assertFalse($bool) {
-        if(!$bool)
-            return true;
-
-        $bt = debug_backtrace(false);
-        self::$errors []= sprintf("Assertion failed: %s:%d (%s)\n",
-            $bt[0]["file"], $bt[0]["line"], $bt[1]["function"]);
-
-        return false;
+    public static function make_fail(string $msg) {
+        return self::$colorize ? self::$RED . $msg . self::$BOLD_OFF : $msg;
     }
 
-    protected function assertTrue($bool, $msg='') {
-        if($bool)
-            return true;
-
-        $bt = debug_backtrace(false);
-        self::$errors []= sprintf("Assertion failed: %s:%d (%s) %s\n",
-            $bt[0]["file"], $bt[0]["line"], $bt[1]["function"], $msg);
-
-        return false;
+    public static function make_warning(string $msg) {
+        return self::$colorize ? self::$YELLOW . $msg . self::$BOLD_OFF : $msg;
     }
 
-    protected function assertInArray($ele, $arr, $cb = NULL) {
-        if ($cb && !is_callable($cb))
-            die("Fatal:  assertInArray callback must be callable!\n");
-
-        if (($in = in_array($ele, $arr)) && (!$cb || $cb($arr[array_search($ele, $arr)])))
-            return true;
-
-
-        $bt = debug_backtrace(false);
-        $ex = $in ? 'validation' : 'missing';
-        self::$errors []= sprintf("Assertion failed: %s:%d (%s) [%s '%s']\n",
-            $bt[0]["file"], $bt[0]["line"], $bt[1]["function"], $ex, $ele);
-
-        return false;
+    protected function printArg($v) {
+        if (is_null($v))
+            return '(null)';
+        else if ($v === false || $v === true)
+            return $v ? '(true)' : '(false)';
+        else if (is_string($v))
+            return "'$v'";
+        else
+            return print_r($v, true);
     }
 
-    protected function assertArrayKey($arr, $key, $cb = NULL) {
-        if ($cb && !is_callable($cb))
-            die("Fatal:  assertArrayKey callback must be callable\n");
-
-        if (($exists = isset($arr[$key])) && (!$cb || $cb($arr[$key])))
-            return true;
-
-        $bt = debug_backtrace(false);
-        $ex = $exists ? 'validation' : 'missing';
-        self::$errors []= sprintf("Assertion failed: %s:%d (%s) [%s '%s']\n",
-            $bt[0]["file"], $bt[0]["line"], $bt[1]["function"], $ex, $key);
-
-        return false;
+    protected function findTestFunction($bt) {
+        $i = 0;
+        while (isset($bt[$i])) {
+            if (substr($bt[$i]['function'], 0, 4) == 'test')
+                return $bt[$i]['function'];
+            $i++;
+        }
+        return NULL;
     }
 
-    protected function assertValidate($val, $cb) {
-        if ( ! is_callable($cb))
-            die("Fatal:  Callable assertValidate callback required\n");
+    protected function assertionTrace(?string $fmt = NULL, ...$args) {
+        $prefix = 'Assertion failed:';
 
+        $lines = [];
+
+        $bt = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS);
+
+        $msg = $args ? vsprintf($fmt, $args) : $fmt;
+
+        $fn = $this->findTestFunction($bt) ?? '(unknown test)';
+        $lines []= sprintf("%s %s - %s", $prefix, self::make_bold($fn),
+                           $msg ? $msg : '(no message)');
+
+        array_shift($bt);
+
+        for ($i = 0; $i < count($bt); $i++) {
+            $file = $bt[$i]['file'] ?? '[internal]';
+            $line = $bt[$i]['line'] ?? 0;
+            $fn   = $bt[$i+1]['function'] ?? $bt[$i]['function'];
+
+            $lines []= sprintf("%s %s:%d (%s)%s",
+                str_repeat(' ', strlen($prefix)), $file, $line,
+                $fn, $msg ? " $msg" : '');
+
+            if (substr($fn, 0, 4) == 'test')
+                break;
+        }
+
+        return implode("\n", $lines) . "\n";
+    }
+
+    protected function assert($fmt, ...$args): void {
+        throw new TestFailedException($this->assertionTrace($fmt, ...$args));
+    }
+
+    protected function assertKeyEquals($expected, $key, $redis = NULL): void {
+        $actual = ($redis ??= $this->redis)->get($key);
+        if ($actual === $expected)
+            return;
+
+        $this->assert("%s !== %s", $this->printArg($actual),
+                      $this->printArg($expected));
+    }
+
+    protected function assertKeyEqualsWeak($expected, $key, $redis = NULL): void {
+        $actual = ($redis ??= $this->redis)->get($key);
+        if ($actual == $expected)
+            return;
+
+        $this->assert("%s != %s", $this->printArg($actual),
+                      $this->printArg($expected));
+    }
+
+    protected function assertKeyExists($key, $redis = NULL): void {
+        if (($redis ??= $this->redis)->exists($key))
+            return;
+
+        $this->assert("Key '%s' does not exist.", $key);
+    }
+
+    protected function assertKeyMissing($key, $redis = NULL): void {
+        if ( ! ($redis ??= $this->redis)->exists($key))
+            return;
+
+        $this->assert("Key '%s' exists but shouldn't.", $key);
+    }
+
+    protected function assertTrue($value): void {
+        if ($value === true)
+            return;
+
+        $this->assert("%s !== %s", $this->printArg($value),
+                      $this->printArg(true));
+    }
+
+    protected function assertFalse($value): void {
+        if ($value === false)
+            return;
+
+        $this->assert("%s !== %s", $this->printArg($value),
+                      $this->printArg(false));
+    }
+
+    protected function assertNull($value): void {
+        if ($value === NULL)
+            return;
+
+        $this->assert("%s !== %s", $this->printArg($value),
+                      $this->printArg(NULL));
+    }
+
+    protected function assertInArray($ele, $arr, ?callable $cb = NULL): void {
+        $this->assertIsArray($arr);
+
+        $key = array_search($ele, $arr);
+
+        if ($key !== false && ($cb === NULL || $cb($arr[$key])))
+            return;
+
+        $this->assert("%s %s %s", $this->printArg($ele),
+                      $key === false ? 'missing from' : 'is invalid in',
+                      $this->printArg($arr));
+    }
+
+    protected function assertIsString($v): void {
+        if (is_string($v))
+            return;
+
+        $this->assert("%s is not a string", $this->printArg($v));
+    }
+
+    protected function assertIsBool($v): void {
+        if (is_bool($v))
+            return;
+
+        $this->assert("%s is not a boolean", $this->printArg($v));
+    }
+
+    protected function assertIsInt($v): void {
+        if (is_int($v))
+            return;
+
+        $this->assert("%s is not an integer", $this->printArg($v));
+    }
+
+    protected function assertIsFloat($v): void {
+        if (is_float($v))
+            return;
+
+        $this->assert("%s is not a float", $this->printArg($v));
+    }
+
+    protected function assertIsObject($v, ?string $type = NULL): void {
+        if ( ! is_object($v)) {
+            $this->assert("%s is not an object", $this->printArg($v));
+        } else if ( $type !== NULL && !($v InstanceOf $type)) {
+            $this->assert("%s is not an instance of %s",
+                          $this->printArg($v), $type);
+        }
+    }
+
+    protected function assertSameType($expected, $actual): void {
+        if (gettype($expected) === gettype($actual))
+            return;
+
+        $this->assert("%s is not the same type as %s",
+                      $this->printArg($actual),
+                      $this->printArg($expected));
+    }
+
+    protected function assertIsArray($v, ?int $size = null): void {
+        if ( ! is_array($v)) {
+            $this->assert("%s is not an array", $this->printArg($v));
+        }
+
+        if ( ! is_null($size) && count($v) != $size) {
+            $this->assert("Array size %d != %d", count($v), $size);
+        }
+    }
+
+    protected function assertArrayKey($arr, $key, ?callable $cb = NULL): void {
+        $this->assertIsArray($arr);
+
+        if ( ! is_int($key) && ! is_string($key)) {
+            $this->assert("%s is not an array key", $this->printArg($key));
+        }
+
+        if (($exists = array_key_exists($key, $arr)) && ($cb === NULL || $cb($arr[$key])))
+            return;
+
+        if ($exists) {
+            $msg = sprintf("%s is invalid in %s", $this->printArg($arr[$key]),
+                                                  $this->printArg($arr));
+        } else {
+            $msg = sprintf("%s is not a key in %s", $this->printArg($key),
+                                                    $this->printArg($arr));
+        }
+
+        $this->assert('%s', $msg);
+    }
+
+    protected function assertArrayKeyEquals($arr, $key, $value): void {
+        $this->assertArrayKey($arr, $key);
+
+        if ($arr[$key] !== $value) {
+            $this->assert(
+                "Value %s !== %s for key %s in %s",
+                $this->printArg($arr[$key]), $this->printArg($value),
+                $this->printArg($key), $this->printArg($arr));
+        }
+    }
+
+    protected function assertValidate($val, callable $cb): void {
         if ($cb($val))
-            return true;
+            return;
 
-        $bt = debug_backtrace(false);
-        self::$errors []= sprintf("Assertion failed: %s:%d (%s)\n",
-            $bt[0]["file"], $bt[0]["line"], $bt[1]["function"]);
-
-        return false;
+        $this->assert("%s is invalid.", $this->printArg($val));
     }
 
-    protected function assertThrowsMatch($arg, $cb, $regex = NULL) {
-        $threw = $match = false;
+    protected function assertNotSerializable(object $object): void {
+        $this->assertThrowsMatch($object, function ($object) {
+            serialize($object);
+        });
 
-        if ( ! is_callable($cb))
-            die("Fatal:  Callable assertThrows callback required\n");
+        /* Before PHP 8.1, only the C: format reaches the handler that throws */
+        $format = PHP_VERSION_ID < 80100 ? 'C' : 'O';
+
+        $this->assertThrowsMatch(get_class($object), function ($class) use ($format) {
+            unserialize($format . ':' . strlen($class) . ':"' . $class . '":0:{}');
+        });
+    }
+
+    protected function assertThrowsMatch($arg, callable $cb, $regex = NULL): void {
+        $threw = $match = false;
 
         try {
             $cb($arg);
+        } catch (TestFailedException | TestSkippedException | ErrorException $ex) {
+            throw $ex;
         } catch (Exception $ex) {
             $threw = true;
             $match = !$regex || preg_match($regex, $ex->getMessage());
         }
 
         if ($threw && $match)
-            return true;
+            return;
 
-        $bt = debug_backtrace(false);
         $ex = !$threw ? 'no exception' : "no match '$regex'";
-        self::$errors []= sprintf("Assertion failed: %s:%d (%s) [%s]\n",
-            $bt[0]["file"], $bt[0]["line"], $bt[1]["function"], $ex);
 
-        return false;
+        $this->assert("[$ex]");
     }
 
-    protected function assertLess($a, $b) {
-        if($a < $b)
+    protected function assertLTE($maximum, $value): void {
+        if ($value <= $maximum)
             return;
 
-        $bt = debug_backtrace(false);
-        self::$errors[] = sprintf("Assertion failed (%s >= %s): %s: %d (%s\n",
-            print_r($a, true), print_r($b, true),
-            $bt[0]["file"], $bt[0]["line"], $bt[1]["function"]);
+        $this->assert("%s > %s", $this->printArg($value), $this->printArg($maximum));
     }
 
-    protected function assertEquals($a, $b) {
-        if($a === $b)
+    protected function assertLT($maximum, $value): void {
+        if ($value < $maximum)
             return;
 
-        $bt = debug_backtrace(false);
-        self::$errors []= sprintf("Assertion failed (%s !== %s): %s:%d (%s)\n",
-            print_r($a, true), print_r($b, true),
-            $bt[0]["file"], $bt[0]["line"], $bt[1]["function"]);
+        $this->assert("%s >= %s", $this->printArg($value), $this->printArg($maximum));
     }
 
-    protected function assertPatternMatch($str_test, $str_regex) {
-        if (preg_match($str_regex, $str_test))
+    protected function assertGT($minimum, $value): void {
+        if ($value > $minimum)
             return;
 
-        $bt = debug_backtrace(false);
-        self::$errors []= sprintf("Assertion failed ('%s' doesnt match '%s'): %s:%d (%s)\n",
-            $str_test, $str_regex, $bt[0]["file"], $bt[0]["line"], $bt[1]["function"]);
+        $this->assert("%s <= %s", $this->printArg($value), $this->printArg($minimum));
     }
 
-    protected function markTestSkipped($msg='') {
+    protected function assertGTE($minimum, $value): void {
+        if ($value >= $minimum)
+            return;
+
+        $this->assert("%s < %s", $this->printArg($value), $this->printArg($minimum));
+    }
+
+    protected function externalCmdFailure($cmd, $output, $msg = NULL, $exit_code = NULL) {
         $bt = debug_backtrace(false);
+
+        $lines[] = sprintf("Assertion failed: %s:%d (%s)",
+                           $bt[0]['file'], $bt[0]['line'],
+                           self::make_bold($bt[0]['function']));
+
+
+        if ($msg)
+            $lines[] = sprintf("         Message: %s", $msg);
+        if ($exit_code !== NULL)
+            $lines[] = sprintf("       Exit code: %d", $exit_code);
+        $lines[] = sprintf(    "         Command: %s", $cmd);
+        if ($output)
+            $lines[] = sprintf("          Output: %s", $output);
+
+        throw new TestFailedException(implode("\n", $lines) . "\n");
+    }
+
+    protected function assertBetween($value, $min, $max, bool $exclusive = false): void {
+        if ($min > $max)
+            [$max, $min] = [$min, $max];
+
+        if ($exclusive) {
+            if ($value > $min && $value < $max)
+                return;
+        } else {
+            if ($value >= $min && $value <= $max)
+                return;
+        }
+
+        $this->assert("%s not between %s and %s",
+            $this->printArg($value), $this->printArg($min), $this->printArg($max));
+    }
+
+    /* Compare arrays without regard to order. */
+    protected function assertEqualsCanonicalizing($expected, $actual, $keep_keys = false): void {
+        if ($expected InstanceOf Traversable)
+            $expected = iterator_to_array($expected);
+
+        if ($actual InstanceOf Traversable)
+            $actual = iterator_to_array($actual);
+
+        $this->assertIsArray($expected);
+        $this->assertIsArray($actual);
+
+        if ($keep_keys) {
+            ksort($expected);
+            ksort($actual);
+        } else {
+            sort($expected);
+            sort($actual);
+        }
+
+        if ($expected === $actual)
+            return;
+
+        $this->assert("%s !== %s",
+                      $this->printArg($actual),
+                      $this->printArg($expected));
+    }
+
+    protected function assertEqualsWeak($expected, $actual): void {
+        if ($expected == $actual)
+            return;
+
+        $this->assert("%s != %s", $this->printArg($actual),
+                      $this->printArg($expected));
+    }
+
+    protected function assertEquals($expected, $actual, ?string $context = NULL): void {
+        if ($expected === $actual)
+            return;
+
+        $context = $context === NULL ? '' : " ({$context})";
+
+        $this->assert("%s !== %s%s", $this->printArg($actual),
+                      $this->printArg($expected), $context);
+    }
+
+    public function assertNotEquals($wrong_value, $test_value): void {
+        if ($wrong_value !== $test_value)
+            return;
+
+        $this->assert("%s === %s", $this->printArg($wrong_value),
+                      $this->printArg($test_value));
+    }
+
+    protected function assertStringContains(string $needle, $haystack): void {
+        if ( ! is_string($haystack)) {
+            $this->assert("%s is not a string", $this->printArg($haystack));
+        }
+
+        if (strstr($haystack, $needle) !== false)
+            return;
+
+        $this->assert("'%s' not found in '%s'", $needle, $haystack);
+    }
+
+    protected function assertPatternMatch(string $pattern, $value): void {
+        $this->assertIsString($value);
+
+        if (preg_match($pattern, $value))
+            return;
+
+        $this->assert("'%s' doesn't match '%s'", $value,
+                      $pattern);
+    }
+
+    protected function markTestSkipped(string $msg = '') {
+        $bt = debug_backtrace(false);
+
         self::$warnings []= sprintf("Skipped test: %s:%d (%s) %s\n",
-            $bt[0]["file"], $bt[0]["line"], $bt[1]["function"], $msg);
+                                    $bt[0]["file"], $bt[0]["line"],
+                                    $bt[1]["function"], $msg);
 
         throw new TestSkippedException($msg);
     }
 
-    private static function getMaxTestLen($arr_methods, $str_limit) {
-        $i_result = 0;
+    private static function normalizeTestFilters($limit): ?array {
+        if ( ! $limit)
+            return NULL;
 
-        foreach ($arr_methods as $obj_method) {
-            $str_name = strtolower($obj_method->name);
+        if ( ! is_array($limit))
+            $limit = [$limit];
 
-            if (substr($str_name, 0, 4) != 'test')
-                continue;
-            if ($str_limit && !strstr($str_name, $str_limit))
-                continue;
+        $result = [
+            'include' => [],
+            'exclude' => [],
+        ];
 
-            if (strlen($str_name) > $i_result) {
-                $i_result = strlen($str_name);
+        foreach ($limit as $tests) {
+            foreach (explode(',', $tests) as $test) {
+                $test = strtolower(trim($test));
+
+                if ($test === '')
+                    continue;
+
+                $type = $test[0] === '!' ? 'exclude' : 'include';
+                if ($type === 'exclude')
+                    $test = trim(substr($test, 1));
+
+                if ($test !== '')
+                    $result[$type][$test] = true;
             }
         }
-        return $i_result;
+
+        if ( ! $result['include'] && ! $result['exclude'])
+            return NULL;
+
+        return [
+            'include' => array_keys($result['include']),
+            'exclude' => array_keys($result['exclude']),
+        ];
+    }
+
+    private static function testMatches(string $name, ?array $filters): bool {
+        if ($filters === NULL)
+            return true;
+
+        $name = strtolower($name);
+
+        foreach ($filters['exclude'] as $filter) {
+            if (strstr($name, $filter) !== false)
+                return false;
+        }
+
+        if ( ! $filters['include'])
+            return true;
+
+        foreach ($filters['include'] as $filter) {
+            if (strstr($name, $filter) !== false)
+                return true;
+        }
+
+        return false;
+    }
+
+    private static function getMaxTestLen(array $methods, ?array $filters): int {
+        $result = 0;
+
+        foreach ($methods as $obj_method) {
+            $name = $obj_method->name;
+
+            if (substr($name, 0, 4) != 'test')
+                continue;
+            if ( ! self::testMatches($name, $filters))
+                continue;
+
+            if (strlen($name) > $result) {
+                $result = strlen($name);
+            }
+        }
+
+        return $result;
     }
 
     private static function findFile($path, $file) {
@@ -239,7 +605,7 @@ class TestSuite
 
     /* Small helper method that tries to load a custom test case class */
     public static function loadTestClass($class) {
-        $filename = "${class}.php";
+        $filename = "{$class}.php";
 
         if (($sp = getenv('PHPREDIS_TEST_SEARCH_PATH'))) {
             $fullname = self::findFile($sp, $filename);
@@ -260,68 +626,87 @@ class TestSuite
     }
 
     /* Flag colorization */
-    public static function flagColorization($boo_override) {
-        self::$_boo_colorize = $boo_override && function_exists('posix_isatty') &&
-            posix_isatty(STDOUT);
+    public static function flagColorization(bool $override) {
+        self::$colorize = $override && function_exists('posix_isatty') &&
+                          defined('STDOUT') && posix_isatty(STDOUT);
     }
 
-    public static function run($className, $str_limit = NULL, $str_host = NULL, $i_port = NULL, $auth = NULL) {
-        /* Lowercase our limit arg if we're passed one */
-        $str_limit = $str_limit ? strtolower($str_limit) : $str_limit;
+    public static function getFailedTests(): array {
+        return array_keys(self::$failed_tests);
+    }
 
-        $rc = new ReflectionClass($className);
+    public static function run($class_name, $limit = NULL,
+                               ?string $host = NULL, ?int $port = NULL,
+                               $auth = NULL, ?int $tls_port = 6378)
+    {
+        $filters = self::normalizeTestFilters($limit);
+
+        $rc = new ReflectionClass($class_name);
         $methods = $rc->GetMethods(ReflectionMethod::IS_PUBLIC);
 
-        $i_max_len = self::getMaxTestLen($methods, $str_limit);
+        $max_test_len = self::getMaxTestLen($methods, $filters);
 
         foreach($methods as $m) {
             $name = $m->name;
-            if(substr($name, 0, 4) !== 'test')
+            if (substr($name, 0, 4) !== 'test')
                 continue;
 
-            /* If we're trying to limit to a specific test and can't match the
-             * substring, skip */
-            if ($str_limit && strstr(strtolower($name), $str_limit)===FALSE) {
+            /* Skip tests that don't satisfy the requested filters */
+            if ( ! self::testMatches($name, $filters)) {
                 continue;
             }
 
-            $str_out_name = str_pad($name, $i_max_len + 1);
-            echo self::make_bold($str_out_name);
+            $padded_name = str_pad($name, $max_test_len + 1);
+            echo self::make_bold($padded_name);
 
-            $count = count($className::$errors);
-            $rt = new $className($str_host, $i_port, $auth);
+            $failed = false;
+
+            set_error_handler(function ($severity, $message, $file, $line) {
+                if ( ! (error_reporting() & $severity))
+                    return false;
+
+                throw new ErrorException($message, 0, $severity, $file, $line);
+            });
 
             try {
+                $rt = new $class_name($host, $port, $auth, $tls_port);
                 $rt->setUp();
                 $rt->$name();
 
-                if ($count === count($className::$errors)) {
-                    $str_msg = self::make_success('PASSED');
-                } else {
-                    $str_msg = self::make_fail('FAILED');
-                }
-                //echo ($count === count($className::$errors)) ? "." : "F";
-            } catch (Exception $e) {
+                $result = self::make_success('PASSED');
+            } catch (Throwable $e) {
                 /* We may have simply skipped the test */
                 if ($e instanceof TestSkippedException) {
-                    $str_msg = self::make_warning('SKIPPED');
+                    $result = self::make_warning('SKIPPED');
+                } else if ($e instanceof TestFailedException) {
+                    $class_name::$errors[] = $e->getMessage();
+                    $result = self::make_fail('FAILED');
+                    $failed = true;
                 } else {
-                    $className::$errors[] = "Uncaught exception '".$e->getMessage()."' ($name)\n";
-                    $str_msg = self::make_fail('FAILED');
+                    $type = $e instanceof Exception ? 'exception' : get_class($e);
+                    $class_name::$errors[] = sprintf("Uncaught %s '%s' (%s) at %s:%d\n",
+                        $type, $e->getMessage(), $name, $e->getFile(), $e->getLine());
+                    $result = self::make_fail('FAILED');
+                    $failed = true;
                 }
+            } finally {
+                restore_error_handler();
             }
 
-            echo "[" . $str_msg . "]\n";
+            if ($failed)
+                self::$failed_tests[$name] = true;
+
+            echo "[" . $result . "]\n";
         }
         echo "\n";
-        echo implode('', $className::$warnings) . "\n";
+        echo implode('', $class_name::$warnings) . "\n";
 
-        if(empty($className::$errors)) {
+        if (empty($class_name::$errors)) {
             echo "All tests passed. \o/\n";
             return 0;
         }
 
-        echo implode('', $className::$errors);
+        echo implode('', $class_name::$errors);
         return 1;
     }
 }
